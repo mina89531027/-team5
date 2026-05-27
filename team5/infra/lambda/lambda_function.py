@@ -370,6 +370,12 @@ def lambda_handler(event, context):
         ip = log.get('httpRequest', {}).get('clientIp', 'unknown')
         ip_groups.setdefault(ip, []).append(log)
 
+    # Correlation Rule 체크
+    correlation_results = check_correlation(ip_groups)
+    if correlation_results:
+        for ip, alerts in correlation_results.items():
+            print(f"[Correlation Alert] IP: {ip} | {alerts}")
+
     for client_ip, logs in ip_groups.items():
         risk  = compute_risk_score(logs)
         tier  = risk['tier']
@@ -485,3 +491,37 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
         print(f"OpenSearch 저장 완료: {response.status_code}")
     except Exception as e:
         print(f"OpenSearch 저장 실패: {e}")
+# ─────────────────────────────────────────────
+# Correlation Rule
+# ─────────────────────────────────────────────
+def check_correlation(ip_groups: dict) -> dict:
+    results = {}
+
+    for client_ip, logs in ip_groups.items():
+        alerts = []
+
+        # 1. 브루트포스 탐지 — 같은 IP 10회 이상 BLOCK
+        block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
+        if block_count >= 10:
+            alerts.append(f"브루트포스 의심: {block_count}회 차단")
+
+        # 2. 경로 탐색 탐지 — /admin, /mypage 반복 접근
+        sensitive_paths = ["/admin", "/mypage", "/setup.php", "/security.php", "/phpinfo.php"]
+        path_hits = []
+        for log in logs:
+            uri = log.get('httpRequest', {}).get('uri', '').lower()
+            for path in sensitive_paths:
+                if path in uri:
+                    path_hits.append(uri)
+        if len(path_hits) >= 3:
+            alerts.append(f"경로 탐색 의심: {len(path_hits)}회 민감 경로 접근")
+
+        # 3. 다중 룰 트리거 — 3가지 이상 다른 공격 룰 탐지
+        triggered_rules = set(l.get('terminatingRuleId', '') for l in logs if l.get('action') == 'BLOCK')
+        if len(triggered_rules) >= 3:
+            alerts.append(f"다중 공격 패턴: {len(triggered_rules)}개 룰 동시 트리거")
+
+        if alerts:
+            results[client_ip] = alerts
+
+    return results
