@@ -4,6 +4,7 @@ import gzip
 import base64
 import os
 import urllib.request
+import requests
 from datetime import datetime, timezone, timedelta
 from collections import Counter
 
@@ -87,6 +88,12 @@ def compute_risk_score(block_logs: list) -> dict:
         score += 20
     if len(rule_counter) >= 3:
         score += 15
+
+    abuse_score = check_abuseipdb(block_logs[0].get('httpRequest', {}).get('clientIp', ''))
+    if abuse_score >= 80:
+        score += 15
+    elif abuse_score >= 50:
+        score += 8
 
     score = min(score, 100)
 
@@ -406,3 +413,21 @@ def lambda_handler(event, context):
         save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
 
     return {'statusCode': 200}
+# ─────────────────────────────────────────────
+# AbuseIPDB API 연동
+# ─────────────────────────────────────────────
+def check_abuseipdb(ip):
+    try:
+        response = requests.get(
+            "https://api.abuseipdb.com/api/v2/check",
+            headers={
+                "Key": os.environ.get('ABUSEIPDB_API_KEY'),
+                "Accept": "application/json"
+            },
+            params={"ipAddress": ip, "maxAgeInDays": 90}
+        )
+        data = response.json()["data"]
+        return data["abuseConfidenceScore"]  # 0~100
+    except Exception as e:
+        print(f"AbuseIPDB 조회 실패: {e}")
+        return 0
