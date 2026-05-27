@@ -452,3 +452,35 @@ def check_otx(ip):
     except Exception as e:
         print(f"OTX 조회 실패: {e}")
         return 0
+# ─────────────────────────────────────────────
+# OpenSearch 저장
+# ─────────────────────────────────────────────
+def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score):
+    try:
+        endpoint = os.environ.get('OPENSEARCH_ENDPOINT')
+        username = os.environ.get('OPENSEARCH_USERNAME')
+        password = os.environ.get('OPENSEARCH_PASSWORD')
+
+        doc = {
+            "detected_at": time_str,
+            "client_ip":   client_ip,
+            "country":     country,
+            "uri":         uri,
+            "method":      method,
+            "attack_type": rule_kor,
+            "parameters":  args,
+            "ai_summary":  summary,
+            "tier":        tier,
+            "score":       score,
+            "source":      "WAF"
+        }
+
+        response = requests.post(
+            f"{endpoint}/waf-logs/_doc",
+            auth=(username, password),
+            headers={"Content-Type": "application/json"},
+            json=doc
+        )
+        print(f"OpenSearch 저장 완료: {response.status_code}")
+    except Exception as e:
+        print(f"OpenSearch 저장 실패: {e}")
