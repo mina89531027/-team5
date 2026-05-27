@@ -1,0 +1,24 @@
+# terraform.tfvars.example
+# 이 파일을 복사해서 terraform.tfvars 로 이름을 바꾸고 값을 채워주세요.
+# terraform.tfvars 는 .gitignore 에 포함되어 있으므로 git에 올라가지 않습니다.
+
+# 본인 공인 IP (터미널에서 curl ifconfig.me 로 확인)
+admin_ip = "YOUR_IP/32"
+
+# 팀원 공인 IP
+mina_ip = "TEAMMATE_IP/32"
+
+# 보안 알림 수신 이메일 (AWS SES에서 인증 필요)
+alert_email = "your@email.com"
+
+# AWS 계정 ID (AWS 콘솔 우측 상단 계정 메뉴에서 확인)
+account_id = "123456789012"
+
+# EC2 키페어 이름 (AWS 콘솔 > EC2 > 키 페어에서 미리 생성)
+key_pair_name = "your-key-pair-name"
+
+# Discord Webhook URL (Discord 채널 설정 > 연동 > 웹후크에서 생성)
+discord_webhook_url = "https://discord.com/api/webhooks/..."
+
+# RDS MySQL 비밀번호 (8자 이상, 영문+숫자 조합 권장)
+rds_password = "your-rds-password"

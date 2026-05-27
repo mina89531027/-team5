@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# Terraform state (민감 정보 포함 - 절대 커밋 금지)
+terraform.tfstate
+terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+
+# Terraform 작업 디렉토리 (프로바이더 바이너리, 수백 MB)
+.terraform/
+
+# 변수 파일 (시크릿 포함 가능성)
+*.tfvars
+*.tfvars.json
+
+# Lambda 빌드 산출물
+lambda.zip
+*.zip
+
+# Claude Code 개인 설정
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
