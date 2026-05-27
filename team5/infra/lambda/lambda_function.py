@@ -95,6 +95,12 @@ def compute_risk_score(block_logs: list) -> dict:
     elif abuse_score >= 50:
         score += 8
 
+    otx_score = check_otx(block_logs[0].get('httpRequest', {}).get('clientIp', ''))
+    if otx_score >= 10:
+        score += 15
+    elif otx_score >= 5:
+        score += 8
+
     score = min(score, 100)
 
     if score >= 70:
@@ -430,4 +436,19 @@ def check_abuseipdb(ip):
         return data["abuseConfidenceScore"]  # 0~100
     except Exception as e:
         print(f"AbuseIPDB 조회 실패: {e}")
+        return 0;
+# ─────────────────────────────────────────────
+# AlienVault OTX API 연동
+# ─────────────────────────────────────────────
+def check_otx(ip):
+    try:
+        response = requests.get(
+            f"https://otx.alienvault.com/api/v1/indicators/IPv4/{ip}/general",
+            headers={"X-OTX-API-KEY": os.environ.get('OTX_API_KEY')}
+        )
+        data = response.json()
+        pulse_count = data.get('pulse_info', {}).get('count', 0)
+        return pulse_count  # 위협 보고서 수
+    except Exception as e:
+        print(f"OTX 조회 실패: {e}")
         return 0
