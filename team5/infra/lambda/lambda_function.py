@@ -417,6 +417,7 @@ def lambda_handler(event, context):
             print(f"Discord 알림 실패: {e}")
 
         save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
+        save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
 
     return {'statusCode': 200}
 # ─────────────────────────────────────────────
