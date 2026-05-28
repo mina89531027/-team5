@@ -381,16 +381,17 @@ def check_correlation(ip_groups: dict) -> dict:
                             alerted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
+                    # ALTER TABLE 먼저
+                    try:
+                        cursor.execute("ALTER TABLE correlation_alerts ADD COLUMN tier VARCHAR(20)")
+                    except:
+                        pass
                     # 최근 5분 차단 횟수 조회
                     cursor.execute("""
                         SELECT COUNT(*) FROM attack_logs
                         WHERE client_ip = %s
                         AND created_at >= NOW() - INTERVAL 5 MINUTE
                     """, (client_ip,))
-                    try:
-                        cursor.execute("ALTER TABLE correlation_alerts ADD COLUMN tier VARCHAR(20)")
-                    except:
-                        pass
                     row = cursor.fetchone()
                     block_count = row[0] if row else 0
                 conn.commit()
@@ -486,35 +487,8 @@ def lambda_handler(event, context):
         ip = log.get('httpRequest', {}).get('clientIp', 'unknown')
         ip_groups.setdefault(ip, []).append(log)
 
-    # Correlation Rule 체크
-    correlation_results = check_correlation(ip_groups)
-    if correlation_results:
-        for ip, alerts in correlation_results.items():
-            print(f"[Correlation Alert] IP: {ip} | {alerts}")
-            alert_text = "\n".join([f"**{a[0]}**: {a[1]}" for a in alerts])
-            payload = {
-                "embeds": [{
-                    "title": "⚠️ Correlation Rule 탐지 알림",
-                    "color": 16744272,
-                    "fields": [
-                        {"name": "🌐 공격 IP", "value": ip, "inline": True},
-                        {"name": "🔍 탐지 내용", "value": alert_text, "inline": False},
-                    ],
-                    "footer": {"text": "Correlation Rule Engine"}
-                }]
-            }
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                os.environ.get('DISCORD_WEBHOOK_URL'),
-                data=data,
-                headers={"Content-Type": "application/json", "User-Agent": "curl/8.7.1"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req) as resp:
-                print(f"Correlation Discord 알림 전송 완료: HTTP {resp.status}")
-
     for client_ip, logs in ip_groups.items():
-        risk = compute_risk_score(logs, client_ip)
+        risk  = compute_risk_score(logs, client_ip)
         tier  = risk['tier']
         score = risk['score']
         model = risk['model']
@@ -561,6 +535,33 @@ def lambda_handler(event, context):
 
         save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
         save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
+
+    # Correlation Rule 체크 (저장 후 조회)
+    correlation_results = check_correlation(ip_groups)
+    if correlation_results:
+        for ip, alerts in correlation_results.items():
+            print(f"[Correlation Alert] IP: {ip} | {alerts}")
+            alert_text = "\n".join([f"**{a[0]}**: {a[1]}" for a in alerts])
+            payload = {
+                "embeds": [{
+                    "title": "⚠️ Correlation Rule 탐지 알림",
+                    "color": 16744272,
+                    "fields": [
+                        {"name": "🌐 공격 IP", "value": ip, "inline": True},
+                        {"name": "🔍 탐지 내용", "value": alert_text, "inline": False},
+                    ],
+                    "footer": {"text": "Correlation Rule Engine"}
+                }]
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                os.environ.get('DISCORD_WEBHOOK_URL'),
+                data=data,
+                headers={"Content-Type": "application/json", "User-Agent": "curl/8.7.1"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req) as resp:
+                print(f"Correlation Discord 알림 전송 완료: HTTP {resp.status}")
 
     return {'statusCode': 200}
 # ─────────────────────────────────────────────
