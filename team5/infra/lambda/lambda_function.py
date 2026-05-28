@@ -61,7 +61,7 @@ TIER_COLOR = {"CRITICAL": 16711680, "WARNING": 16744272, "LOW": 3394611}
 # ─────────────────────────────────────────────
 # 위험도 점수 산출
 # ─────────────────────────────────────────────
-def compute_risk_score(block_logs: list) -> dict:
+def compute_risk_score(block_logs: list, client_ip: str = '') -> dict:
     score        = 0
     rule_counter = Counter()
     keywords     = Counter()
@@ -89,13 +89,13 @@ def compute_risk_score(block_logs: list) -> dict:
     if len(rule_counter) >= 3:
         score += 15
 
-    abuse_score = check_abuseipdb(block_logs[0].get('httpRequest', {}).get('clientIp', ''))
+    abuse_score = check_abuseipdb(client_ip)
     if abuse_score >= 80:
         score += 15
     elif abuse_score >= 50:
         score += 8
 
-    otx_score = check_otx(block_logs[0].get('httpRequest', {}).get('clientIp', ''))
+    otx_score = check_otx(client_ip)
     if otx_score >= 10:
         score += 15
     elif otx_score >= 5:
@@ -377,7 +377,7 @@ def lambda_handler(event, context):
             print(f"[Correlation Alert] IP: {ip} | {alerts}")
 
     for client_ip, logs in ip_groups.items():
-        risk  = compute_risk_score(logs)
+        risk = compute_risk_score(logs, client_ip)
         tier  = risk['tier']
         score = risk['score']
         model = risk['model']
