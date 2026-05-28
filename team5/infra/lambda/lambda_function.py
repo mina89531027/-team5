@@ -351,7 +351,123 @@ def save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, sum
     except Exception as e:
         print(f"MySQL 저장 실패: {e}")
 
+# ─────────────────────────────────────────────
+# Correlation Rule
+# ─────────────────────────────────────────────
+def check_correlation(ip_groups: dict) -> dict:
+    results = {}
 
+    for client_ip, logs in ip_groups.items():
+        alerts = []
+
+        # MySQL에서 최근 5분간 같은 IP 차단 횟수 조회
+        block_count = 0
+        if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
+            try:
+                conn = pymysql.connect(
+                    host=os.environ.get('RDS_HOST'),
+                    user=os.environ.get('RDS_USER'),
+                    password=os.environ.get('RDS_PASSWORD'),
+                    database=os.environ.get('RDS_DATABASE'),
+                    connect_timeout=5,
+                )
+                with conn.cursor() as cursor:
+                    # correlation_alerts 테이블 생성
+                    cursor.execute("""
+                        CREATE TABLE IF NOT EXISTS correlation_alerts (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            client_ip VARCHAR(50),
+                            tier VARCHAR(20),
+                            alerted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    # 최근 5분 차단 횟수 조회
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM attack_logs
+                        WHERE client_ip = %s
+                        AND created_at >= NOW() - INTERVAL 5 MINUTE
+                    """, (client_ip,))
+                    try:
+                        cursor.execute("ALTER TABLE correlation_alerts ADD COLUMN tier VARCHAR(20)")
+                    except:
+                        pass
+                    row = cursor.fetchone()
+                    block_count = row[0] if row else 0
+                conn.commit()
+                conn.close()
+                print(f"MySQL 조회 완료: {client_ip} | 최근 5분 {block_count}회")
+            except Exception as e:
+                print(f"MySQL 조회 실패: {e}")
+                block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
+        else:
+            block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
+
+        # 1. 브루트포스 탐지
+        if block_count >= 8:
+            alerts.append(("브루트포스 탐지", f"동일 IP {block_count}회 차단 — CRITICAL", "CRITICAL"))
+        elif block_count >= 4:
+            alerts.append(("브루트포스 탐지", f"동일 IP {block_count}회 차단 — WARNING", "WARNING"))
+
+        # 2. 경로 탐색 탐지
+        sensitive_paths = ["/admin", "/mypage", "/setup.php", "/security.php",
+                           "/phpinfo.php", "/.env", "/.env.local", "/.env.backup", "/.env.production"]
+        path_hits = []
+        for log in logs:
+            uri = log.get('httpRequest', {}).get('uri', '').lower()
+            for path in sensitive_paths:
+                if path in uri:
+                    path_hits.append(uri)
+        if len(path_hits) >= 3:
+            alerts.append(("경로 탐색 탐지", f"{len(path_hits)}회 민감 경로 접근 — WARNING", "WARNING"))
+
+        # 3. .env 스캐닝 탐지
+        env_hits = [l for l in logs if '/.env' in l.get('httpRequest', {}).get('uri', '').lower()]
+        if env_hits:
+            alerts.append(("env 스캐닝 탐지", f"/.env GET 요청 {len(env_hits)}회 감지 — HIGH", "HIGH"))
+
+        # 4. 다중 룰 트리거
+        triggered_rules = set(l.get('terminatingRuleId', '') for l in logs if l.get('action') == 'BLOCK')
+        if len(triggered_rules) >= 3:
+            alerts.append(("다중 공격 패턴", f"{len(triggered_rules)}개 룰 동시 트리거 — CRITICAL", "CRITICAL"))
+
+        if alerts:
+            # 등급별 중복 알림 방지
+            if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
+                try:
+                    conn = pymysql.connect(
+                        host=os.environ.get('RDS_HOST'),
+                        user=os.environ.get('RDS_USER'),
+                        password=os.environ.get('RDS_PASSWORD'),
+                        database=os.environ.get('RDS_DATABASE'),
+                        connect_timeout=5,
+                    )
+                    filtered_alerts = []
+                    with conn.cursor() as cursor:
+                        for alert in alerts:
+                            tier = alert[2]
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM correlation_alerts
+                                WHERE client_ip = %s
+                                AND tier = %s
+                                AND alerted_at >= NOW() - INTERVAL 10 MINUTE
+                            """, (client_ip, tier))
+                            already = cursor.fetchone()[0]
+                            if not already:
+                                filtered_alerts.append(alert)
+                                cursor.execute("""
+                                    INSERT INTO correlation_alerts (client_ip, tier)
+                                    VALUES (%s, %s)
+                                """, (client_ip, tier))
+                    conn.commit()
+                    conn.close()
+                    alerts = filtered_alerts
+                except Exception as e:
+                    print(f"중복 알림 확인 실패: {e}")
+
+            if alerts:
+                results[client_ip] = alerts
+
+    return results
 # ─────────────────────────────────────────────
 # Lambda 핸들러
 # ─────────────────────────────────────────────
@@ -375,6 +491,27 @@ def lambda_handler(event, context):
     if correlation_results:
         for ip, alerts in correlation_results.items():
             print(f"[Correlation Alert] IP: {ip} | {alerts}")
+            alert_text = "\n".join([f"**{a[0]}**: {a[1]}" for a in alerts])
+            payload = {
+                "embeds": [{
+                    "title": "⚠️ Correlation Rule 탐지 알림",
+                    "color": 16744272,
+                    "fields": [
+                        {"name": "🌐 공격 IP", "value": ip, "inline": True},
+                        {"name": "🔍 탐지 내용", "value": alert_text, "inline": False},
+                    ],
+                    "footer": {"text": "Correlation Rule Engine"}
+                }]
+            }
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                os.environ.get('DISCORD_WEBHOOK_URL'),
+                data=data,
+                headers={"Content-Type": "application/json", "User-Agent": "curl/8.7.1"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req) as resp:
+                print(f"Correlation Discord 알림 전송 완료: HTTP {resp.status}")
 
     for client_ip, logs in ip_groups.items():
         risk = compute_risk_score(logs, client_ip)
@@ -439,8 +576,13 @@ def check_abuseipdb(ip):
             },
             params={"ipAddress": ip, "maxAgeInDays": 90}
         )
-        data = response.json()["data"]
-        return data["abuseConfidenceScore"]  # 0~100
+        result = response.json()
+        if "data" not in result:
+            print(f"AbuseIPDB 응답 오류: {result}")
+            return 0
+        score = result["data"]["abuseConfidenceScore"]
+        print(f"AbuseIPDB 조회 완료: {ip} | 점수: {score}")
+        return score
     except Exception as e:
         print(f"AbuseIPDB 조회 실패: {e}")
         return 0;
@@ -455,6 +597,7 @@ def check_otx(ip):
         )
         data = response.json()
         pulse_count = data.get('pulse_info', {}).get('count', 0)
+        print(f"OTX 조회 완료: {ip} | pulse 수: {pulse_count}")
         return pulse_count  # 위협 보고서 수
     except Exception as e:
         print(f"OTX 조회 실패: {e}")
@@ -491,37 +634,3 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
         print(f"OpenSearch 저장 완료: {response.status_code}")
     except Exception as e:
         print(f"OpenSearch 저장 실패: {e}")
-# ─────────────────────────────────────────────
-# Correlation Rule
-# ─────────────────────────────────────────────
-def check_correlation(ip_groups: dict) -> dict:
-    results = {}
-
-    for client_ip, logs in ip_groups.items():
-        alerts = []
-
-        # 1. 브루트포스 탐지 — 같은 IP 10회 이상 BLOCK
-        block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
-        if block_count >= 10:
-            alerts.append(f"브루트포스 의심: {block_count}회 차단")
-
-        # 2. 경로 탐색 탐지 — /admin, /mypage 반복 접근
-        sensitive_paths = ["/admin", "/mypage", "/setup.php", "/security.php", "/phpinfo.php"]
-        path_hits = []
-        for log in logs:
-            uri = log.get('httpRequest', {}).get('uri', '').lower()
-            for path in sensitive_paths:
-                if path in uri:
-                    path_hits.append(uri)
-        if len(path_hits) >= 3:
-            alerts.append(f"경로 탐색 의심: {len(path_hits)}회 민감 경로 접근")
-
-        # 3. 다중 룰 트리거 — 3가지 이상 다른 공격 룰 탐지
-        triggered_rules = set(l.get('terminatingRuleId', '') for l in logs if l.get('action') == 'BLOCK')
-        if len(triggered_rules) >= 3:
-            alerts.append(f"다중 공격 패턴: {len(triggered_rules)}개 룰 동시 트리거")
-
-        if alerts:
-            results[client_ip] = alerts
-
-    return results
