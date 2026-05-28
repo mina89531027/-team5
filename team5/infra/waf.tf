@@ -359,6 +359,76 @@ resource "aws_wafv2_web_acl" "team5_waf" {
     }
   }
 
+  # Priority 12: 인증 없이 주요 기능 호출 차단
+  rule {
+    name     = "AuthRequired-Protect"
+    priority = 12
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          or_statement {
+            statement {
+              byte_match_statement {
+                search_string = "/mypage"
+                field_to_match {
+                  uri_path {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+                positional_constraint = "STARTS_WITH"
+              }
+            }
+            statement {
+              byte_match_statement {
+                search_string = "/admin"
+                field_to_match {
+                  uri_path {}
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+                positional_constraint = "STARTS_WITH"
+              }
+            }
+          }
+        }
+        statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string = "Authorization"
+                field_to_match {
+                  single_header {
+                    name = "authorization"
+                  }
+                }
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+                positional_constraint = "CONTAINS"
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "AuthRequired-Protect"
+      sampled_requests_enabled   = true
+    }
+  }
+
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "team5-waf-tf"
