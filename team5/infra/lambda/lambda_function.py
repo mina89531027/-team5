@@ -409,17 +409,33 @@ def check_correlation(ip_groups: dict) -> dict:
         elif block_count >= 4:
             alerts.append(("브루트포스 탐지", f"동일 IP {block_count}회 차단 — WARNING", "WARNING"))
 
-        # 2. 경로 탐색 탐지
-        sensitive_paths = ["/admin", "/mypage", "/setup.php", "/security.php",
-                           "/phpinfo.php", "/.env", "/.env.local", "/.env.backup", "/.env.production"]
-        path_hits = []
-        for log in logs:
-            uri = log.get('httpRequest', {}).get('uri', '').lower()
-            for path in sensitive_paths:
-                if path in uri:
-                    path_hits.append(uri)
-        if len(path_hits) >= 3:
-            alerts.append(("경로 탐색 탐지", f"{len(path_hits)}회 민감 경로 접근 — WARNING", "WARNING"))
+        # 2. 경로 탐색 탐지 — MySQL 누적 횟수 기반
+        path_count = 0
+        if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
+            try:
+                conn = pymysql.connect(
+                    host=os.environ.get('RDS_HOST'),
+                    user=os.environ.get('RDS_USER'),
+                    password=os.environ.get('RDS_PASSWORD'),
+                    database=os.environ.get('RDS_DATABASE'),
+                    connect_timeout=5,
+                )
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM attack_logs
+                        WHERE client_ip = %s
+                        AND attack_type = '관리자 경로 접근 시도'
+                        AND created_at >= NOW() - INTERVAL 5 MINUTE
+                    """, (client_ip,))
+                    row = cursor.fetchone()
+                    path_count = row[0] if row else 0
+                conn.close()
+                print(f"경로 탐색 조회 완료: {client_ip} | 최근 5분 {path_count}회")
+            except Exception as e:
+                print(f"경로 탐색 조회 실패: {e}")
+
+        if path_count >= 5:
+            alerts.append(("경로 탐색 탐지", f"동일 IP {path_count}회 민감 경로 접근 — WARNING", "WARNING"))
 
         # 3. .env 스캐닝 탐지
         env_hits = [l for l in logs if '/.env' in l.get('httpRequest', {}).get('uri', '').lower()]
@@ -450,7 +466,7 @@ def check_correlation(ip_groups: dict) -> dict:
                                 SELECT COUNT(*) FROM correlation_alerts
                                 WHERE client_ip = %s
                                 AND tier = %s
-                                AND alerted_at >= NOW() - INTERVAL 10 MINUTE
+                                AND alerted_at >= NOW() - INTERVAL 5 MINUTE
                             """, (client_ip, tier))
                             already = cursor.fetchone()[0]
                             if not already:
@@ -500,8 +516,6 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"IP Set 추가 실패: {e}")
 
-        if tier == 'LOW':
-            continue
 
         rep      = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
         kst      = timezone(timedelta(hours=9))
@@ -514,6 +528,13 @@ def lambda_handler(event, context):
         args     = http.get('args',       '없음')
         rule     = rep.get('terminatingRuleId', '알 수 없음')
         rule_kor = RULE_MAP.get(rule, rule)
+
+
+
+        if tier == 'LOW':
+            save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
+            save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
+            continue
 
         try:
             summary = ask_llama(
