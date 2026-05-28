@@ -74,6 +74,16 @@ if( isset( $_POST[ 'Login' ] ) ) {
 	if( $result && mysqli_num_rows( $result ) == 1 ) {    // Login Successful...
 		unset( $_SESSION['require_captcha'] );
 		dvwaMessagePush( "You have logged in as '{$user}'" );
+
+		// 로그인 성공 기록 (다중 위치 로그인 탐지용)
+$login_ip      = getRealIp();
+$login_user    = $user;
+$login_time    = date('Y-m-d H:i:s');
+$insert_query  = "INSERT INTO login_logs (username, ip, login_time)
+                  VALUES ('$login_user', '$login_ip', '$login_time')
+                  ON DUPLICATE KEY UPDATE ip = '$login_ip', login_time = '$login_time'";
+@mysqli_query($GLOBALS["___mysqli_ston"], $insert_query);
+
 		dvwaLogin( $user );
 		dvwaRedirect( DVWA_WEB_PAGE_TO_ROOT . 'index.php' );
 	}
