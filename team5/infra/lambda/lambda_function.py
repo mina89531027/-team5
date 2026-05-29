@@ -151,23 +151,21 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
             f"[공격 정보], [출력 형식] 같은 태그는 출력하지 마세요.\n\n"
             f"공격 정보:\n"
             f"IP: {client_ip} | 국가: {country} | Risk Score: {score}점\n"
-            f"감지된 공격 유형 분류 (각 항목은 반드시 줄바꿈으로 구분하여 한 줄씩 출력하세요):\n{rule_detail}"
+            f"감지된 공격 유형 분류 (각 항목은 반드시 줄바꿈으로 구분하여 한 줄씩 출력하세요):\n"
+            f"{rule_detail}"
             f"{corr_detail}"
             f"총 {total_count}건 탐지\n\n"
             f"각 공격 유형은 반드시 줄바꿈으로 구분하여 한 줄씩 출력하세요.\n"
             f"아래 형식으로 탐지된 모든 공격을 나열하세요. WAF 탐지와 Correlation Rule 위반 항목을 모두 포함하세요.\n"
             f"형식: [공격유형]: [횟수 또는 건수] (IP={client_ip}, [상세정보])\n"
-            f"예) SQL Injection: 1건 (IP={client_ip}, Rule=SQLi)\n"
-            f"예) 브루트포스: 8회 (IP={client_ip}, 로그인 반복 시도)\n"
-            f"예) 비정상 시간대 접근: 1회 (IP={client_ip}, 새벽 3시 접근)\n\n"
             f"공격 체인 분석\n\n"
-            f"연속 시도: 감지된 모든 공격 유형을 종합하여 공격자의 행동 패턴을 1-2문장으로 분석하세요.\n\n"
+            f"감지된 모든 공격 유형을 종합하여 공격자의 행동 패턴을 1-2문장으로 분석하되 공격별로 줄바꿈.\n\n"
             f"위협 수준\n\n"
             f"심각: Risk Score {score} 기준으로 모든 공격을 종합한 피해 가능성을 설명하세요.\n\n"
             f"대응 권고사항\n\n"
-            f"감지된 공격 유형에 맞는 구체적인 대응 방안 3가지를 각각 제목: 설명 형식으로 작성하세요.\n\n"
+            f"구체적인 대응 방안 3가지, 각각 제목: 설명 형식으로 작성하되 대응별로 줄바꿈.\n\n"
             f"추가 모니터링 포인트\n\n"
-            f"감지된 공격과 관련된 추가 모니터링 권고사항 3가지를 작성하세요."
+            f"(추가 모니터링 권고사항 3가지)"
         )
         max_gen_len = 1024
         #~instruction = (
@@ -261,31 +259,23 @@ def send_discord(time_str, client_ip, country, uri, method, rule_kor, args, summ
         rule_kor_display = rule_kor
 
     if tier == "CRITICAL":
-        title  = "🔴 보안 관제 이상 탐지 알림 [심각]"
-        fields = [
-            {"name": "📅 탐지 시각",     "value": time_str,                   "inline": False},
-            {"name": "📊 Risk Score",    "value": f"{score} / 100 (심각)",     "inline": True},
-            {"name": "🤖 사용 모델",     "value": model_id or "N/A",          "inline": True},
-            {"name": "🌐 공격 IP",       "value": f"{client_ip} ({country})", "inline": False},
-            {"name": "⚔️ 공격 기법",     "value": rule_kor_display,           "inline": True},
-            {"name": "🛡️ 현재 상태",    "value": "차단됨 (BLOCK)",            "inline": True},
-            {"name": "🔗 요청 URL",      "value": uri,                        "inline": False},
-            {"name": "📡 요청 방식",     "value": method,                     "inline": True},
-            {"name": "📝 공격 파라미터", "value": args or "없음",             "inline": True},
-            {"name": "🤖 AI 관제 요약",  "value": summary,                    "inline": False},
-        ]
+        title = "🔴 보안 관제 이상 탐지 알림 [심각]"
     else:
-        title  = "🚨 보안 관제 이상 탐지 알림"
-        fields = [
-            {"name": "📅 탐지 시각",     "value": time_str,                   "inline": False},
-            {"name": "🌐 공격 IP",       "value": f"{client_ip} ({country})", "inline": True},
-            {"name": "⚔️ 공격 기법",     "value": rule_kor_display,           "inline": True},
-            {"name": "🛡️ 현재 상태",    "value": "차단됨 (BLOCK)",            "inline": True},
-            {"name": "🔗 요청 URL",      "value": uri,                        "inline": False},
-            {"name": "📡 요청 방식",     "value": method,                     "inline": True},
-            {"name": "📝 공격 파라미터", "value": args or "없음",             "inline": True},
-            {"name": "🤖 AI 관제 요약",  "value": summary,                    "inline": False},
-        ]
+        title = "🚨 보안 관제 이상 탐지 알림"
+
+    fields = [
+        {"name": "📅 탐지 시각",     "value": time_str,                   "inline": False},
+        {"name": "📊 Risk Score",    "value": f"{score} / 100",           "inline": True},
+        {"name": "🤖 사용 모델",     "value": model_id or "N/A",          "inline": True},
+        {"name": "🌐 공격 IP",       "value": f"{client_ip} ({country})", "inline": False},
+        {"name": "⚔️ 공격 기법",     "value": rule_kor_display,           "inline": False},
+        {"name": "🛡️ 현재 상태",    "value": "차단됨 (BLOCK)",            "inline": True},
+        {"name": "🔗 요청 URL",      "value": uri,                        "inline": False},
+        {"name": "📡 요청 방식",     "value": method,                     "inline": True},
+        {"name": "📝 공격 파라미터", "value": args or "없음",             "inline": False},
+        {"name": "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "value": "🤖 AI 관제 요약", "inline": False},
+        {"name": "\u200b",           "value": summary,                    "inline": False},
+    ]
 
     payload = {
         "embeds": [{
@@ -644,15 +634,37 @@ def lambda_handler(event, context):
             save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
             continue
 
-        # 1단계: MySQL 저장 (Correlation 조회를 위해 먼저 저장)
+        # 1단계: MySQL 저장
         save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
         save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
 
-        # 2단계: Correlation Rule 체크 (저장 후 조회)
-        correlation_results = check_correlation(ip_groups)
+    # 2단계: Correlation Rule 체크 (for 루프 밖에서 한 번만 실행)
+    correlation_results = check_correlation(ip_groups)
+
+    for client_ip, logs in ip_groups.items():
+        risk  = compute_risk_score(logs, client_ip)
+        tier  = risk['tier']
+        score = risk['score']
+        model = risk['model']
+
+        rep      = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
+        kst      = timezone(timedelta(hours=9))
+        dt       = datetime.fromtimestamp(rep.get('timestamp', 0) / 1000, tz=kst)
+        time_str = dt.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
+        http     = rep.get('httpRequest', {})
+        country  = http.get('country',    '알 수 없음')
+        uri      = http.get('uri',        '알 수 없음')
+        method   = http.get('httpMethod', '알 수 없음')
+        args     = http.get('args',       '없음')
+        rule     = rep.get('terminatingRuleId', '알 수 없음')
+        rule_kor = RULE_MAP.get(rule, rule)
+
+        if tier == 'LOW':
+            continue
+
         corr_alerts = correlation_results.get(client_ip, []) if correlation_results else []
 
-        # 3단계: LLM 분석 (Correlation 포함)
+        # 3단계: LLM 분석
         try:
             summary = ask_llama(
                 client_ip, country, uri, method, rule_kor, args, model, tier,
