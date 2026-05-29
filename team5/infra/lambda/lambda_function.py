@@ -141,21 +141,25 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
         # Correlation Rule 위반 내용 추가
         corr_detail = ""
         if correlation_alerts:
-            corr_detail = "\nCorrelation Rule 위반:\n"
+            corr_detail = "\nCorrelation Rule 위반 탐지:\n"
             for a in correlation_alerts:
                 corr_detail += f"- {a[0]}: {a[1]}\n"
+
         instruction = (
             f"다음 보안 로그를 심층 분석하여 아래 5개 섹션 형식 그대로 한국어로 작성하세요.\n"
             f"섹션 제목은 변경하지 말고, 각 섹션 내용만 채워 작성하세요.\n"
             f"[공격 정보], [출력 형식] 같은 태그는 출력하지 마세요.\n\n"
             f"공격 정보:\n"
             f"IP: {client_ip} | 국가: {country} | Risk Score: {score}점\n"
-            f"감지된 공격:\n{rule_detail}"
+            f"감지된 공격 유형 분류 (각 항목은 반드시 줄바꿈으로 구분하여 한 줄씩 출력하세요):\n{rule_detail}"
             f"{corr_detail}"
             f"총 {total_count}건 탐지\n\n"
-            f"공격 유형 분류\n\n"
-            f"WAF 탐지 공격과 Correlation Rule 위반 항목을 모두 포함하여 각 공격 유형별 건수와 IP 정보를 나열하세요.\n"
-            f"예) SQL Injection: 1건 (IP={client_ip}), 브루트포스: 8회 (IP={client_ip}) 등\n\n"
+            f"각 공격 유형은 반드시 줄바꿈으로 구분하여 한 줄씩 출력하세요.\n"
+            f"아래 형식으로 탐지된 모든 공격을 나열하세요. WAF 탐지와 Correlation Rule 위반 항목을 모두 포함하세요.\n"
+            f"형식: [공격유형]: [횟수 또는 건수] (IP={client_ip}, [상세정보])\n"
+            f"예) SQL Injection: 1건 (IP={client_ip}, Rule=SQLi)\n"
+            f"예) 브루트포스: 8회 (IP={client_ip}, 로그인 반복 시도)\n"
+            f"예) 비정상 시간대 접근: 1회 (IP={client_ip}, 새벽 3시 접근)\n\n"
             f"공격 체인 분석\n\n"
             f"연속 시도: 감지된 모든 공격 유형을 종합하여 공격자의 행동 패턴을 1-2문장으로 분석하세요.\n\n"
             f"위협 수준\n\n"
@@ -165,6 +169,7 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
             f"추가 모니터링 포인트\n\n"
             f"감지된 공격과 관련된 추가 모니터링 권고사항 3가지를 작성하세요."
         )
+        max_gen_len = 1024
         #~instruction = (
         #    f"다음 보안 로그를 심층 분석하여 아래 5개 섹션 형식 그대로 한국어로 작성하세요.\n"
         #    f"섹션 제목은 변경하지 말고, 각 섹션 내용만 채워 작성하세요.\n\n"
@@ -185,7 +190,7 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
         #    f"추가 모니터링 포인트\n\n"
         #    f"(추가 모니터링 권고사항 3가지)"
         #)
-        max_gen_len = 1024
+        # max_gen_len = 1024
     else:
         instruction = (
             f"다음 보안 로그를 분석하여 아래 형식에 맞게 정확히 3문장으로 작성하세요.\n\n"
@@ -207,15 +212,14 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
     )
 
     native_request = {
-        "prompt":      prompt,
+        "prompt": prompt,
         "max_gen_len": max_gen_len,
         "temperature": 0.3,
-        "top_p":       0.9,
+        "top_p": 0.9,
     }
-    response       = bedrock.invoke_model(modelId=model_id, body=json.dumps(native_request))
+    response = bedrock.invoke_model(modelId=model_id, body=json.dumps(native_request))
     model_response = json.loads(response["body"].read())
     return model_response.get("generation", "분석 실패").strip()
-
 
 # ─────────────────────────────────────────────
 # IP 차단
@@ -251,8 +255,8 @@ def add_ip_to_blocklist(client_ip):
 def send_discord(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score, model_id=None, correlation_alerts=None):
     # Correlation Rule 위반 내용 공격 기법에 추가
     if correlation_alerts:
-        corr_text = " , ".join([a[0] for a in correlation_alerts])
-        rule_kor_display = f"{rule_kor} , {corr_text}"
+        corr_text = "\n".join([a[0] for a in correlation_alerts])
+        rule_kor_display = f"{rule_kor}\n{corr_text}"
     else:
         rule_kor_display = rule_kor
 
@@ -521,14 +525,14 @@ def check_correlation(ip_groups: dict) -> dict:
             except Exception as e:
                 print(f"다중 위치 로그인 탐지 실패: {e}")
 
-        # 비정상 시간대 접근 탐지
+        # 5.비정상 시간대 접근 탐지
         kst = timezone(timedelta(hours=9))
         current_hour = datetime.now(tz=kst).hour
         if 16 <= current_hour < 18:  # 테스트용: 16~18시
-            alerts.append(("비정상 시간대 접근", f"현재 {current_hour}시 접근 탐지 — WARNING", "WARNING"))
+            kst_now = datetime.now(tz=kst)
+            alerts.append(("비정상 시간대 접근", f"{kst_now.strftime('%H시 %M분')} 접근 탐지 — WARNING", "WARNING"))
 
-        # API Rate 탐지 — 5분 내 20회 이상
-
+        # 6.API Rate 탐지 — 5분 내 20회 이상
         if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
             try:
                 conn = pymysql.connect(
@@ -553,7 +557,7 @@ def check_correlation(ip_groups: dict) -> dict:
             except Exception as e:
                 print(f"API Rate 조회 실패: {e}")
 
-        # 5. 다중 룰 트리거
+        # 7. 다중 룰 트리거
         triggered_rules = set(l.get('terminatingRuleId', '') for l in logs if l.get('action') == 'BLOCK')
         if len(triggered_rules) >= 3:
             alerts.append(("다중 공격 패턴", f"{len(triggered_rules)}개 룰 동시 트리거 — CRITICAL", "CRITICAL"))
