@@ -780,6 +780,11 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
         password = os.environ.get('OPENSEARCH_PASSWORD')
 
         doc = {
+            # 정규화 표준 필드 추가
+            "@timestamp":  datetime.now(timezone.utc).isoformat(),
+            "severity":    tier,
+            "src_ip":      client_ip,
+            # 기존 필드 유지
             "detected_at": time_str,
             "client_ip":   client_ip,
             "country":     country,
@@ -792,7 +797,6 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
             "score":       score,
             "source":      "WAF"
         }
-
         response = requests.post(
             f"{endpoint}/waf-logs/_doc",
             auth=(username, password),
