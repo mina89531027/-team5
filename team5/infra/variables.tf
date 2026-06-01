@@ -27,3 +27,7 @@ variable "rds_password" {
   description = "RDS MySQL 비밀번호"
   sensitive   = true
 }
+variable "opensearch_password" {
+  description = "OpenSearch 관리자 비밀번호 (최소 8자, 대소문자+숫자+특수문자 포함)"
+  sensitive   = true
+}
