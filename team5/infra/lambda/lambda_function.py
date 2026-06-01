@@ -802,3 +802,91 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
         print(f"OpenSearch 저장 완료: {response.status_code}")
     except Exception as e:
         print(f"OpenSearch 저장 실패: {e}")
+
+# ─────────────────────────────────────────────
+# EC2 로그 정규화
+# ─────────────────────────────────────────────
+def normalize_ec2(raw):
+    severity_map = {
+        "ERROR": "CRITICAL", "WARNING": "WARNING",
+        "INFO": "LOW", "CRITICAL": "CRITICAL"
+    }
+    level = raw.get("level", "INFO").upper()
+
+    doc = {
+        "@timestamp": datetime.fromisoformat(
+            raw.get("timestamp")
+        ).astimezone(timezone.utc).isoformat(),
+        "severity":    severity_map.get(level, "LOW"),
+        "source":      "EC2",
+        "src_ip":      raw.get("src_ip"),
+        "action":      raw.get("event_type"),
+        "rule_id":     None,
+        "request_uri": None,
+        "country":     None,
+        "user_id":     raw.get("user_id"),
+        "host":        raw.get("hostname"),
+    }
+
+    endpoint = os.environ.get('OPENSEARCH_ENDPOINT')
+    username = os.environ.get('OPENSEARCH_USERNAME')
+    password = os.environ.get('OPENSEARCH_PASSWORD')
+
+    try:
+        response = requests.post(
+            f"{endpoint}/ec2-logs/_doc",
+            auth=(username, password),
+            headers={"Content-Type": "application/json"},
+            json=doc
+        )
+        print(f"EC2 OpenSearch 저장 완료: {response.status_code}")
+    except Exception as e:
+        print(f"EC2 OpenSearch 저장 실패: {e}")
+
+    return doc
+
+
+# ─────────────────────────────────────────────
+# CloudTrail 로그 정규화
+# ─────────────────────────────────────────────
+def normalize_cloudtrail(raw):
+    event_name = raw.get("eventName", "")
+
+    high_risk_events = {
+        "DeleteLogGroup", "PutBucketPolicy",
+        "CreateUser", "AttachUserPolicy",
+        "DeleteTrail", "StopLogging"
+    }
+    severity = "CRITICAL" if event_name in high_risk_events else "LOW"
+
+    doc = {
+        "@timestamp": datetime.strptime(
+            raw["eventTime"], "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc).isoformat(),
+        "severity":    severity,
+        "source":      "CloudTrail",
+        "src_ip":      raw.get("sourceIPAddress"),
+        "action":      event_name,
+        "rule_id":     None,
+        "request_uri": None,
+        "country":     None,
+        "user_id":     raw.get("userIdentity", {}).get("userName"),
+        "aws_region":  raw.get("awsRegion"),
+    }
+
+    endpoint = os.environ.get('OPENSEARCH_ENDPOINT')
+    username = os.environ.get('OPENSEARCH_USERNAME')
+    password = os.environ.get('OPENSEARCH_PASSWORD')
+
+    try:
+        response = requests.post(
+            f"{endpoint}/cloudtrail-logs/_doc",
+            auth=(username, password),
+            headers={"Content-Type": "application/json"},
+            json=doc
+        )
+        print(f"CloudTrail OpenSearch 저장 완료: {response.status_code}")
+    except Exception as e:
+        print(f"CloudTrail OpenSearch 저장 실패: {e}")
+
+    return doc
