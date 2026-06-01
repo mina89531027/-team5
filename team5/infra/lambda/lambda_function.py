@@ -798,7 +798,7 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
             "source":      "WAF"
         }
         response = requests.post(
-            f"{endpoint}/waf-logs/_doc",
+            f"{endpoint}/logs-waf/_doc",
             auth=(username, password),
             headers={"Content-Type": "application/json"},
             json=doc
@@ -838,7 +838,7 @@ def normalize_ec2(raw):
 
     try:
         response = requests.post(
-            f"{endpoint}/ec2-logs/_doc",
+            f"{endpoint}/logs-ec2/_doc",
             auth=(username, password),
             headers={"Content-Type": "application/json"},
             json=doc
@@ -884,7 +884,7 @@ def normalize_cloudtrail(raw):
 
     try:
         response = requests.post(
-            f"{endpoint}/cloudtrail-logs/_doc",
+            f"{endpoint}/logs-cloudtrail/_doc",
             auth=(username, password),
             headers={"Content-Type": "application/json"},
             json=doc
