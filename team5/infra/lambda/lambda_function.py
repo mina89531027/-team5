@@ -3,7 +3,6 @@ import boto3
 import gzip
 import base64
 import os
-import urllib.request
 import requests
 from datetime import datetime, timezone, timedelta
 from collections import Counter
@@ -56,6 +55,9 @@ RULE_MAP = {
 }
 
 TIER_COLOR = {"CRITICAL": 16711680, "WARNING": 16744272, "LOW": 3394611}
+
+# 비정상 시간대 범위 (KST 기준)
+ABNORMAL_HOURS = range(16, 18)
 
 
 # ─────────────────────────────────────────────
@@ -138,7 +140,6 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
                 rule_detail += f"{rk}: {cnt}건 (IP={client_ip}, Rule={rk})\n"
         total_count = sum(rule_counter.values()) if rule_counter else 1
 
-        # Correlation Rule 위반 내용 추가
         corr_detail = ""
         if correlation_alerts:
             corr_detail = "\nCorrelation Rule 위반 탐지:\n"
@@ -168,27 +169,6 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
             f"(추가 모니터링 권고사항 3가지)"
         )
         max_gen_len = 1024
-        #~instruction = (
-        #    f"다음 보안 로그를 심층 분석하여 아래 5개 섹션 형식 그대로 한국어로 작성하세요.\n"
-        #    f"섹션 제목은 변경하지 말고, 각 섹션 내용만 채워 작성하세요.\n\n"
-        #    f"[공격 정보]\n"
-        #    f"IP: {client_ip} | 국가: {country} | Risk Score: {score}점\n"
-        #    f"감지된 공격:\n{rule_detail}"
-        #    f"{corr_detail}"
-        #    f"총 {total_count}건 탐지\n\n"
-        #    f"[출력 형식]\n"
-        #    f"공격 유형 분류\n\n"
-        #    f"(각 공격 유형별 건수와 IP 정보 나열)\n\n"
-        #    f"공격 체인 분석\n\n"
-        #    f"연속 시도: (연속 공격 패턴 분석 1-2문장)\n\n"
-        #    f"위협 수준\n\n"
-        #    f"심각: (Risk Score {score} 기준 피해 가능성 설명)\n\n"
-        #    f"대응 권고사항\n\n"
-        #    f"(구체적인 대응 방안 3가지, 각각 제목: 설명 형식)\n\n"
-        #    f"추가 모니터링 포인트\n\n"
-        #    f"(추가 모니터링 권고사항 3가지)"
-        #)
-        # max_gen_len = 1024
     else:
         instruction = (
             f"다음 보안 로그를 분석하여 아래 형식에 맞게 정확히 3문장으로 작성하세요.\n\n"
@@ -218,6 +198,7 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
     response = bedrock.invoke_model(modelId=model_id, body=json.dumps(native_request))
     model_response = json.loads(response["body"].read())
     return model_response.get("generation", "분석 실패").strip()
+
 
 # ─────────────────────────────────────────────
 # IP 차단
@@ -251,7 +232,6 @@ def add_ip_to_blocklist(client_ip):
 # Discord 알림
 # ─────────────────────────────────────────────
 def send_discord(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score, model_id=None, correlation_alerts=None):
-    # Correlation Rule 위반 내용 공격 기법에 추가
     if correlation_alerts:
         corr_text = "\n".join([a[0] for a in correlation_alerts])
         rule_kor_display = f"{rule_kor}\n{corr_text}"
@@ -274,7 +254,7 @@ def send_discord(time_str, client_ip, country, uri, method, rule_kor, args, summ
         {"name": "📡 요청 방식",     "value": method,                     "inline": True},
         {"name": "📝 공격 파라미터", "value": args or "없음",             "inline": False},
         {"name": "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "value": "🤖 AI 관제 요약", "inline": False},
-        {"name": "\u200b",           "value": summary,                    "inline": False},
+        {"name": "​",           "value": summary,                    "inline": False},
     ]
 
     payload = {
@@ -285,15 +265,12 @@ def send_discord(time_str, client_ip, country, uri, method, rule_kor, args, summ
             "footer": {"text": "⚠️ 즉각적인 확인 및 조치가 필요합니다."},
         }]
     }
-    data = json.dumps(payload).encode("utf-8")
-    req  = urllib.request.Request(
+    resp = requests.post(
         os.environ.get('DISCORD_WEBHOOK_URL'),
-        data=data,
-        headers={"Content-Type": "application/json", "User-Agent": "curl/8.7.1"},
-        method="POST",
+        json=payload,
+        headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as resp:
-        print(f"Discord 알림 전송 완료: HTTP {resp.status}")
+    print(f"Discord 알림 전송 완료: HTTP {resp.status_code}")
 
 
 # ─────────────────────────────────────────────
@@ -306,7 +283,6 @@ def send_email(time_str, client_ip, country, uri, method, rule_kor, args, summar
     model_name  = model_id or ("Llama 3.1 70B" if tier == "CRITICAL" else "Llama 3.1 8B")
     subject     = f"[보안 관제 {tier_kor}] {rule_kor} 탐지 - {client_ip} ({time_str})"
 
-    # Correlation Rule 위반 내용 추가
     corr_section = ""
     if correlation_alerts:
         corr_section = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -390,6 +366,65 @@ def save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, sum
     except Exception as e:
         print(f"MySQL 저장 실패: {e}")
 
+
+# ─────────────────────────────────────────────
+# 중복 알림 체크
+# ─────────────────────────────────────────────
+def get_new_attack_types(client_ip, rule_kor, corr_alerts):
+    if not PYMYSQL_AVAILABLE or not os.environ.get('RDS_HOST'):
+        return True
+    try:
+        conn = pymysql.connect(
+            host=os.environ.get('RDS_HOST'),
+            user=os.environ.get('RDS_USER'),
+            password=os.environ.get('RDS_PASSWORD'),
+            database=os.environ.get('RDS_DATABASE'),
+            connect_timeout=5,
+        )
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS attack_alerts (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    client_ip VARCHAR(50),
+                    attack_type VARCHAR(100),
+                    alerted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                SELECT attack_type FROM attack_alerts
+                WHERE client_ip = %s
+                AND alerted_at >= NOW() - INTERVAL 2 MINUTE
+            """, (client_ip,))
+            already_alerted = set(row[0] for row in cursor.fetchall())
+
+            new_types = []
+            if rule_kor not in already_alerted:
+                new_types.append(rule_kor)
+            if corr_alerts:
+                for alert in corr_alerts:
+                    if alert[0] not in already_alerted:
+                        new_types.append(alert[0])
+
+            if not new_types:
+                print(f"중복 알림 스킵: {client_ip} | 새로운 공격 없음")
+                conn.close()
+                return False
+
+            for attack_type in new_types:
+                cursor.execute("""
+                    INSERT INTO attack_alerts (client_ip, attack_type)
+                    VALUES (%s, %s)
+                """, (client_ip, attack_type))
+
+        conn.commit()
+        conn.close()
+        print(f"새로운 공격 유형 탐지: {client_ip} | {new_types}")
+        return True
+    except Exception as e:
+        print(f"중복 알림 체크 실패: {e}")
+        return True
+
+
 # ─────────────────────────────────────────────
 # Correlation Rule
 # ─────────────────────────────────────────────
@@ -399,8 +434,6 @@ def check_correlation(ip_groups: dict) -> dict:
     for client_ip, logs in ip_groups.items():
         alerts = []
 
-        # MySQL에서 최근 5분간 같은 IP 차단 횟수 조회
-        block_count = 0
         if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
             try:
                 conn = pymysql.connect(
@@ -411,7 +444,7 @@ def check_correlation(ip_groups: dict) -> dict:
                     connect_timeout=5,
                 )
                 with conn.cursor() as cursor:
-                    # correlation_alerts 테이블 생성
+                    # 필요한 테이블 초기화 (tier 컬럼 포함)
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS correlation_alerts (
                             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -420,78 +453,6 @@ def check_correlation(ip_groups: dict) -> dict:
                             alerted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
-                    # ALTER TABLE 먼저
-                    try:
-                        cursor.execute("ALTER TABLE correlation_alerts ADD COLUMN tier VARCHAR(20)")
-                    except:
-                        pass
-                    # 최근 5분 차단 횟수 조회
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM attack_logs
-                        WHERE client_ip = %s
-                        AND created_at >= NOW() - INTERVAL 1 MINUTE
-                    """, (client_ip,))
-                    row = cursor.fetchone()
-                    block_count = row[0] if row else 0
-                conn.commit()
-                conn.close()
-                print(f"MySQL 조회 완료: {client_ip} | 최근 5분 {block_count}회")
-            except Exception as e:
-                print(f"MySQL 조회 실패: {e}")
-                block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
-        else:
-            block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
-
-        # 1. 브루트포스 탐지
-        if block_count >= 8:
-            alerts.append(("브루트포스 탐지", f"동일 IP {block_count}회 차단 — CRITICAL", "CRITICAL"))
-        elif block_count >= 4:
-            alerts.append(("브루트포스 탐지", f"동일 IP {block_count}회 차단 — WARNING", "WARNING"))
-
-        # 2. 경로 탐색 탐지 — MySQL 누적 횟수 기반
-        path_count = 0
-        if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
-            try:
-                conn = pymysql.connect(
-                    host=os.environ.get('RDS_HOST'),
-                    user=os.environ.get('RDS_USER'),
-                    password=os.environ.get('RDS_PASSWORD'),
-                    database=os.environ.get('RDS_DATABASE'),
-                    connect_timeout=5,
-                )
-                with conn.cursor() as cursor:
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM attack_logs
-                        WHERE client_ip = %s
-                        AND attack_type = '관리자 경로 접근 시도'
-                        AND created_at >= NOW() - INTERVAL 1 MINUTE
-                    """, (client_ip,))
-                    row = cursor.fetchone()
-                    path_count = row[0] if row else 0
-                conn.close()
-                print(f"경로 탐색 조회 완료: {client_ip} | 최근 5분 {path_count}회")
-            except Exception as e:
-                print(f"경로 탐색 조회 실패: {e}")
-
-        if path_count >= 5:
-            alerts.append(("경로 탐색 탐지", f"동일 IP {path_count}회 민감 경로 접근 — WARNING", "WARNING"))
-
-        # 3. .env 스캐닝 탐지
-        env_hits = [l for l in logs if '/.env' in l.get('httpRequest', {}).get('uri', '').lower()]
-        if env_hits:
-            alerts.append(("env 스캐닝 탐지", f"/.env GET 요청 {len(env_hits)}회 감지 — HIGH", "HIGH"))
-
-        # 4. 다중 위치 로그인 탐지
-        if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
-            try:
-                conn = pymysql.connect(
-                    host=os.environ.get('RDS_HOST'),
-                    user=os.environ.get('RDS_USER'),
-                    password=os.environ.get('RDS_PASSWORD'),
-                    database=os.environ.get('RDS_DATABASE'),
-                    connect_timeout=5,
-                )
-                with conn.cursor() as cursor:
                     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS login_logs (
                             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -500,6 +461,29 @@ def check_correlation(ip_groups: dict) -> dict:
                             login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
+
+                    # 최근 1분 차단 횟수
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM attack_logs
+                        WHERE client_ip = %s
+                        AND created_at >= NOW() - INTERVAL 1 MINUTE
+                    """, (client_ip,))
+                    row = cursor.fetchone()
+                    block_count = row[0] if row else 0
+                    print(f"MySQL 조회 완료: {client_ip} | 최근 1분 {block_count}회")
+
+                    # 관리자 경로 접근 횟수
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM attack_logs
+                        WHERE client_ip = %s
+                        AND attack_type = '관리자 경로 접근 시도'
+                        AND created_at >= NOW() - INTERVAL 1 MINUTE
+                    """, (client_ip,))
+                    row = cursor.fetchone()
+                    path_count = row[0] if row else 0
+                    print(f"경로 탐색 조회 완료: {client_ip} | 최근 1분 {path_count}회")
+
+                    # 다중 위치 로그인
                     cursor.execute("""
                         SELECT username, COUNT(DISTINCT ip) as ip_count
                         FROM login_logs
@@ -508,84 +492,76 @@ def check_correlation(ip_groups: dict) -> dict:
                         HAVING ip_count >= 2
                     """)
                     multi_login = cursor.fetchall()
-                    if multi_login:
-                        for row in multi_login:
-                            alerts.append(("다중 위치 로그인", f"{row[0]} 계정 {row[1]}개 IP에서 동시 접속 — CRITICAL", "CRITICAL"))
-                conn.close()
-            except Exception as e:
-                print(f"다중 위치 로그인 탐지 실패: {e}")
 
-        # 5.비정상 시간대 접근 탐지
-        kst = timezone(timedelta(hours=9))
-        current_hour = datetime.now(tz=kst).hour
-        if 16 <= current_hour < 18:  # 테스트용: 16~18시
-            kst_now = datetime.now(tz=kst)
-            alerts.append(("비정상 시간대 접근", f"{kst_now.strftime('%H시 %M분')} 접근 탐지 — WARNING", "WARNING"))
+                    # API Rate 탐지
+                    api_count = block_count  # 이미 조회한 값 재사용
 
-        # 6.API Rate 탐지 — 5분 내 20회 이상
-        if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
-            try:
-                conn = pymysql.connect(
-                    host=os.environ.get('RDS_HOST'),
-                    user=os.environ.get('RDS_USER'),
-                    password=os.environ.get('RDS_PASSWORD'),
-                    database=os.environ.get('RDS_DATABASE'),
-                    connect_timeout=5,
-                )
-                with conn.cursor() as cursor:
+                    # 중복 알림 필터용 기존 기록 조회
                     cursor.execute("""
-                        SELECT COUNT(*) FROM attack_logs
+                        SELECT tier FROM correlation_alerts
                         WHERE client_ip = %s
-                        AND created_at >= NOW() - INTERVAL 1 MINUTE
+                        AND alerted_at >= NOW() - INTERVAL 1 MINUTE
                     """, (client_ip,))
-                    row = cursor.fetchone()
-                    api_count = row[0] if row else 0
+                    already_alerted_tiers = set(row[0] for row in cursor.fetchall())
+
                 conn.close()
-                print(f"API Rate 조회 완료: {client_ip} | 최근 5분 {api_count}회")
-                if api_count >= 3:
-                    alerts.append(("API Rate 탐지", f"동일 IP {api_count}회 과도한 요청 — WARNING", "WARNING"))
             except Exception as e:
-                print(f"API Rate 조회 실패: {e}")
+                print(f"MySQL 조회 실패: {e}")
+                block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
+                path_count = 0
+                multi_login = []
+                api_count = block_count
+                already_alerted_tiers = set()
+        else:
+            block_count = sum(1 for l in logs if l.get('action') == 'BLOCK')
+            path_count = 0
+            multi_login = []
+            api_count = block_count
+            already_alerted_tiers = set()
+
+        # 1. 브루트포스 탐지
+        if block_count >= 8:
+            alerts.append(("브루트포스 탐지", "동일 IP 반복 차단", "CRITICAL"))
+        elif block_count >= 4:
+            alerts.append(("브루트포스 탐지", "동일 IP 반복 차단", "WARNING"))
+
+        # 2. 경로 탐색 탐지
+        if path_count >= 5:
+            alerts.append(("경로 탐색 탐지", "동일 IP 접근 탐지", "WARNING"))
+
+        # 3. .env 스캐닝 탐지
+        env_hits = [l for l in logs if '/.env' in l.get('httpRequest', {}).get('uri', '').lower()]
+        if env_hits:
+            alerts.append(("env 스캐닝 탐지", "/.env 접근 탐지", "HIGH"))
+
+        # 4. 다중 위치 로그인 탐지
+        for row in multi_login:
+            alerts.append(("다중 위치 로그인", f"{row[0]} 계정 다중 IP 동시 접속 탐지", "CRITICAL"))
+
+        # 5. 비정상 시간대 접근 탐지
+        kst = timezone(timedelta(hours=9))
+        kst_now = datetime.now(tz=kst)
+        if kst_now.hour in ABNORMAL_HOURS:
+            alerts.append(("비정상 시간대 접근", f"{kst_now.strftime('%H시 %M분')} 접근 탐지", "WARNING"))
+
+        # 6. API Rate 탐지
+        if api_count >= 3:
+            alerts.append(("API Rate 탐지", "과도한 요청 탐지", "WARNING"))
 
         # 7. 다중 룰 트리거
         triggered_rules = set(l.get('terminatingRuleId', '') for l in logs if l.get('action') == 'BLOCK')
         if len(triggered_rules) >= 3:
-            alerts.append(("다중 공격 패턴", f"{len(triggered_rules)}개 룰 동시 트리거 — CRITICAL", "CRITICAL"))
+            alerts.append(("다중 공격 패턴", "다중 룰 동시 트리거 탐지", "CRITICAL"))
 
-        if alerts:
-            # 등급별 중복 알림 방지
-            if PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
-                try:
-                    conn = pymysql.connect(
-                        host=os.environ.get('RDS_HOST'),
-                        user=os.environ.get('RDS_USER'),
-                        password=os.environ.get('RDS_PASSWORD'),
-                        database=os.environ.get('RDS_DATABASE'),
-                        connect_timeout=5,
-                    )
-                    filtered_alerts = []
-                    with conn.cursor() as cursor:
-                        for alert in alerts:
-                            tier = alert[2]
-                            cursor.execute("""
-                                SELECT COUNT(*) FROM correlation_alerts
-                                WHERE client_ip = %s
-                                AND tier = %s
-                                AND alerted_at >= NOW() - INTERVAL 1 MINUTE
-                            """, (client_ip, tier))
-                            already = cursor.fetchone()[0]
-                            if not already:
-                                filtered_alerts.append(alert)
-                    conn.commit()
-                    conn.close()
-                    alerts = filtered_alerts
-                except Exception as e:
-                    print(f"중복 알림 확인 실패: {e}")
+        # 등급별 중복 알림 방지
+        filtered_alerts = [a for a in alerts if a[2] not in already_alerted_tiers]
 
-            if alerts:
-                results[client_ip] = alerts
+        if filtered_alerts:
+            results[client_ip] = filtered_alerts
 
     return results
+
+
 # ─────────────────────────────────────────────
 # Lambda 핸들러
 # ─────────────────────────────────────────────
@@ -604,11 +580,11 @@ def lambda_handler(event, context):
         ip = log.get('httpRequest', {}).get('clientIp', 'unknown')
         ip_groups.setdefault(ip, []).append(log)
 
+    # 1단계: IP 차단 + 초기 DB/OpenSearch 저장
     for client_ip, logs in ip_groups.items():
         risk  = compute_risk_score(logs, client_ip)
         tier  = risk['tier']
         score = risk['score']
-        model = risk['model']
 
         print(f"[{tier}] IP: {client_ip} | Score: {score} | Rules: {list(risk['rule_counter'].keys())}")
 
@@ -629,23 +605,21 @@ def lambda_handler(event, context):
         rule     = rep.get('terminatingRuleId', '알 수 없음')
         rule_kor = RULE_MAP.get(rule, rule)
 
-        if tier == 'LOW':
-            save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
-            save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
-            continue
-
-        # 1단계: MySQL 저장
         save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
         save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
 
-    # 2단계: Correlation Rule 체크 (for 루프 밖에서 한 번만 실행)
+    # 2단계: Correlation Rule 체크 (전체 ip_groups 대상, 한 번만)
     correlation_results = check_correlation(ip_groups)
 
+    # 3단계: LLM 분석 + 알림 전송
     for client_ip, logs in ip_groups.items():
         risk  = compute_risk_score(logs, client_ip)
         tier  = risk['tier']
         score = risk['score']
         model = risk['model']
+
+        if tier == 'LOW':
+            continue
 
         rep      = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
         kst      = timezone(timedelta(hours=9))
@@ -659,12 +633,14 @@ def lambda_handler(event, context):
         rule     = rep.get('terminatingRuleId', '알 수 없음')
         rule_kor = RULE_MAP.get(rule, rule)
 
-        if tier == 'LOW':
+        corr_alerts = correlation_results.get(client_ip, [])
+
+        # 중복 알림 체크 — 새로운 공격 유형이 없으면 스킵
+        if not get_new_attack_types(client_ip, rule_kor, corr_alerts):
+            print(f"알림 스킵: {client_ip}")
             continue
 
-        corr_alerts = correlation_results.get(client_ip, []) if correlation_results else []
-
-        # 3단계: LLM 분석
+        # LLM 분석
         try:
             summary = ask_llama(
                 client_ip, country, uri, method, rule_kor, args, model, tier,
@@ -695,7 +671,10 @@ def lambda_handler(event, context):
             except Exception as e:
                 print(f"MySQL summary 업데이트 실패: {e}")
 
-        # 4단계: 알림 전송
+        # OpenSearch summary 업데이트
+        save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
+
+        # 알림 전송
         try:
             send_email(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score,
                        model_id=model, correlation_alerts=corr_alerts if corr_alerts else None)
@@ -708,7 +687,7 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"Discord 알림 실패: {e}")
 
-        # Correlation 알림 기록 저장
+        # Correlation 알림 기록 저장 (알림 전송 후)
         if corr_alerts and PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
             try:
                 conn = pymysql.connect(
@@ -731,6 +710,8 @@ def lambda_handler(event, context):
                 print(f"Correlation 알림 기록 저장 실패: {e}")
 
     return {'statusCode': 200}
+
+
 # ─────────────────────────────────────────────
 # AbuseIPDB API 연동
 # ─────────────────────────────────────────────
@@ -753,7 +734,9 @@ def check_abuseipdb(ip):
         return score
     except Exception as e:
         print(f"AbuseIPDB 조회 실패: {e}")
-        return 0;
+        return 0
+
+
 # ─────────────────────────────────────────────
 # AlienVault OTX API 연동
 # ─────────────────────────────────────────────
@@ -766,10 +749,12 @@ def check_otx(ip):
         data = response.json()
         pulse_count = data.get('pulse_info', {}).get('count', 0)
         print(f"OTX 조회 완료: {ip} | pulse 수: {pulse_count}")
-        return pulse_count  # 위협 보고서 수
+        return pulse_count
     except Exception as e:
         print(f"OTX 조회 실패: {e}")
         return 0
+
+
 # ─────────────────────────────────────────────
 # OpenSearch 저장
 # ─────────────────────────────────────────────
@@ -806,6 +791,7 @@ def save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args
         print(f"OpenSearch 저장 완료: {response.status_code}")
     except Exception as e:
         print(f"OpenSearch 저장 실패: {e}")
+
 
 # ─────────────────────────────────────────────
 # EC2 로그 정규화
