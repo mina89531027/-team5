@@ -23,6 +23,14 @@ resource "aws_security_group" "opensearch_sg" {
   }
 
   ingress {
+    description = "OpenSearch API test"
+    from_port   = 9200
+    to_port     = 9200
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     description = "OpenSearch Dashboards"
     from_port   = 5601
     to_port     = 5601
