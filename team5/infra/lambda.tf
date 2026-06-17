@@ -100,7 +100,7 @@ resource "aws_lambda_function" "waf_log_processor" {
   timeout          = 60
   memory_size      = 128
 
- environment {
+  environment {
     variables = {
       BLOCKED_IPSET_ID    = aws_wafv2_ip_set.blocked_ipset.id
       ADMIN_IPSET_ID      = aws_wafv2_ip_set.admin_ipset.id
@@ -111,9 +111,9 @@ resource "aws_lambda_function" "waf_log_processor" {
       RDS_USER            = "admin"
       RDS_PASSWORD        = var.rds_password
       RDS_DATABASE        = "security_logs"
-      OPENSEARCH_ENDPOINT = "http://44.204.223.145:9200"
+      OPENSEARCH_ENDPOINT = "http://${aws_instance.opensearch.public_ip}:9200"
       OPENSEARCH_USERNAME = "admin"
-      OPENSEARCH_PASSWORD = "Team5Password!"
+      OPENSEARCH_PASSWORD = var.opensearch_password
     }
   }
 
