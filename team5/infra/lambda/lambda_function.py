@@ -201,7 +201,7 @@ def ask_llama(client_ip, country, uri, method, rule, args, model_id, tier, rule_
 
 
 # ─────────────────────────────────────────────
-# IP 차단
+# IP 차단 (기존 작성 코드 통합)
 # ─────────────────────────────────────────────
 def add_ip_to_blocklist(client_ip):
     admin_ips = [ip.strip() for ip in os.environ.get('ADMIN_IPS', '').split(',') if ip.strip()]
@@ -209,11 +209,13 @@ def add_ip_to_blocklist(client_ip):
         print(f"관리자 IP 제외: {client_ip}")
         return
 
-    wafv2    = boto3.client('wafv2', region_name='us-east-1')
+    # 기존 us-east-1 및 CLOUDFRONT 설정 유지
+    wafv2 = boto3.client('wafv2', region_name='us-east-1')
     ipset_id = os.environ.get('BLOCKED_IPSET_ID')
+
     response = wafv2.get_ip_set(Name='BlockedIPSet-tf', Scope='CLOUDFRONT', Id=ipset_id)
     current_addresses = response['IPSet']['Addresses']
-    lock_token        = response['LockToken']
+    lock_token = response['LockToken']
 
     new_ip = f"{client_ip}/32"
     if new_ip in current_addresses:
@@ -563,46 +565,64 @@ def check_correlation(ip_groups: dict) -> dict:
 
 
 # ─────────────────────────────────────────────
-# Lambda 핸들러
+# 기존 설정 상단에 추가 및 수정 예시
+# ─────────────────────────────────────────────
+# WAF에서 다중 로그인 탐지 시 지정한 규칙 ID를 등록하세요.
+MULTI_LOGIN_RULE_ID = 'Multi-Location-Login-Rule'
+
+RULE_MAP[MULTI_LOGIN_RULE_ID] = '다중 위치 동시 로그인 탐지'
+RULE_WEIGHTS[MULTI_LOGIN_RULE_ID] = 80  # 위험도를 높게 책정하여 HIGH/CRITICAL 티어로 분류되도록 설정
+
+
+# ─────────────────────────────────────────────
+# Lambda 핸들러 (수정본)
 # ─────────────────────────────────────────────
 def lambda_handler(event, context):
     compressed = base64.b64decode(event['awslogs']['data'])
-    log_data   = json.loads(gzip.decompress(compressed).decode('utf-8'))
+    log_data = json.loads(gzip.decompress(compressed).decode('utf-8'))
 
-    all_logs   = [json.loads(e['message']) for e in log_data['logEvents']]
-    block_logs = [l for l in all_logs if l.get('action') == 'BLOCK']
+    all_logs = [json.loads(e['message']) for e in log_data['logEvents']]
 
-    if not block_logs:
-        return {'statusCode': 200, 'body': 'No BLOCK events'}
+    # [수정 포인트 1]
+    # 기본 WAF 차단 로그(BLOCK) 뿐만 아니라, 다중 로그인 탐지 규칙에 걸린 로그도 대상에 포함시킵니다.
+    # 만약 WAF에서 다중 로그인을 BLOCK이 아닌 COUNT/ALLOW로 탐지하더라도 차단 프로세스로 진입하게 만듭니다.
+    target_logs = [
+        l for l in all_logs
+        if l.get('action') == 'BLOCK' or l.get('terminatingRuleId') == MULTI_LOGIN_RULE_ID
+    ]
+
+    if not target_logs:
+        return {'statusCode': 200, 'body': 'No target security events'}
 
     ip_groups = {}
-    for log in block_logs:
+    for log in target_logs:
         ip = log.get('httpRequest', {}).get('clientIp', 'unknown')
         ip_groups.setdefault(ip, []).append(log)
 
     # 1단계: IP 차단 + 초기 DB/OpenSearch 저장
     for client_ip, logs in ip_groups.items():
-        risk  = compute_risk_score(logs, client_ip)
-        tier  = risk['tier']
+        risk = compute_risk_score(logs, client_ip)
+        tier = risk['tier']
         score = risk['score']
 
         print(f"[{tier}] IP: {client_ip} | Score: {score} | Rules: {list(risk['rule_counter'].keys())}")
 
+        # [자동 차단 실행] 기존 구현하신 헬퍼 함수가 BlockedIPSet-tf 에 IP를 등록합니다.
         try:
             add_ip_to_blocklist(client_ip)
         except Exception as e:
             print(f"IP Set 추가 실패: {e}")
 
-        rep      = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
-        kst      = timezone(timedelta(hours=9))
-        dt       = datetime.fromtimestamp(rep.get('timestamp', 0) / 1000, tz=kst)
+        rep = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
+        kst = timezone(timedelta(hours=9))
+        dt = datetime.fromtimestamp(rep.get('timestamp', 0) / 1000, tz=kst)
         time_str = dt.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
-        http     = rep.get('httpRequest', {})
-        country  = http.get('country',    '알 수 없음')
-        uri      = http.get('uri',        '알 수 없음')
-        method   = http.get('httpMethod', '알 수 없음')
-        args     = http.get('args',       '없음')
-        rule     = rep.get('terminatingRuleId', '알 수 없음')
+        http = rep.get('httpRequest', {})
+        country = http.get('country', '알 수 없음')
+        uri = http.get('uri', '알 수 없음')
+        method = http.get('httpMethod', '알 수 없음')
+        args = http.get('args', '없음')
+        rule = rep.get('terminatingRuleId', '알 수 없음')
         rule_kor = RULE_MAP.get(rule, rule)
 
         save_to_mysql(time_str, client_ip, country, uri, method, rule_kor, args, '', tier, score)
@@ -613,24 +633,24 @@ def lambda_handler(event, context):
 
     # 3단계: LLM 분석 + 알림 전송
     for client_ip, logs in ip_groups.items():
-        risk  = compute_risk_score(logs, client_ip)
-        tier  = risk['tier']
+        risk = compute_risk_score(logs, client_ip)
+        tier = risk['tier']
         score = risk['score']
         model = risk['model']
 
         if tier == 'LOW':
             continue
 
-        rep      = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
-        kst      = timezone(timedelta(hours=9))
-        dt       = datetime.fromtimestamp(rep.get('timestamp', 0) / 1000, tz=kst)
+        rep = max(logs, key=lambda l: RULE_WEIGHTS.get(l.get('terminatingRuleId', ''), 0))
+        kst = timezone(timedelta(hours=9))
+        dt = datetime.fromtimestamp(rep.get('timestamp', 0) / 1000, tz=kst)
         time_str = dt.strftime("%Y년 %m월 %d일 %H시 %M분 %S초")
-        http     = rep.get('httpRequest', {})
-        country  = http.get('country',    '알 수 없음')
-        uri      = http.get('uri',        '알 수 없음')
-        method   = http.get('httpMethod', '알 수 없음')
-        args     = http.get('args',       '없음')
-        rule     = rep.get('terminatingRuleId', '알 수 없음')
+        http = rep.get('httpRequest', {})
+        country = http.get('country', '알 수 없음')
+        uri = http.get('uri', '알 수 없음')
+        method = http.get('httpMethod', '알 수 없음')
+        args = http.get('args', '없음')
+        rule = rep.get('terminatingRuleId', '알 수 없음')
         rule_kor = RULE_MAP.get(rule, rule)
 
         corr_alerts = correlation_results.get(client_ip, [])
@@ -640,7 +660,7 @@ def lambda_handler(event, context):
             print(f"알림 스킵: {client_ip}")
             continue
 
-        # LLM 분석
+        # LLM 분석 (다중 로그인 정보가 인자로 넘어가 LLM이 계정 도용 가능성을 분석하게 됩니다)
         try:
             summary = ask_llama(
                 client_ip, country, uri, method, rule_kor, args, model, tier,
@@ -674,7 +694,7 @@ def lambda_handler(event, context):
         # OpenSearch summary 업데이트
         save_to_opensearch(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score)
 
-        # 알림 전송
+        # 알림 전송 (Discord/이메일에 '다중 위치 동시 로그인 탐지' 타이틀과 AI 요약본이 전송됨)
         try:
             send_email(time_str, client_ip, country, uri, method, rule_kor, args, summary, tier, score,
                        model_id=model, correlation_alerts=corr_alerts if corr_alerts else None)
@@ -687,7 +707,7 @@ def lambda_handler(event, context):
         except Exception as e:
             print(f"Discord 알림 실패: {e}")
 
-        # Correlation 알림 기록 저장 (알림 전송 후)
+        # Correlation 알림 기록 저장
         if corr_alerts and PYMYSQL_AVAILABLE and os.environ.get('RDS_HOST'):
             try:
                 conn = pymysql.connect(
